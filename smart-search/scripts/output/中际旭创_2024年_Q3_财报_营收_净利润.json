@@ -1,0 +1,72 @@
+{
+  "query": "中际旭创 2024年 Q3 财报 营收 净利润",
+  "language": "zh",
+  "engine": "baidu",
+  "mode": "financial",
+  "timestamp": "2026-02-27T10:38:24.065076",
+  "results": [
+    {
+      "title": "中际旭创Q3净利润31.37亿元,同比增长124.98%|财报见闻",
+      "url": "http://www.baidu.com/link?url=zbMxdyupTsNeGIwYxA0fz3P8ZIFUi8URlX0Ak8wqhFWO_H3Eo9ovqZfAEx3O-jcFK_usjSa1ld8_7hCMgcF0r_",
+      "type": "financial",
+      "data": {
+        "profit": "31.37亿元",
+        "growth": "增长124.98%"
+      },
+      "method": "fast"
+    },
+    {
+      "title": "中际旭创:2024年净利润51.71亿元,同比增长137.90%-金融界7*24小时",
+      "url": "http://www.baidu.com/link?url=r_2TzZbDTEpWG2ybow_rkFDOKxQzVBAA6P19YC_NXVwyqqlUFE_yYWUHbICD-0UPM9l4I0ePnm68lyUPmFb2UK",
+      "type": "financial",
+      "data": {
+        "profit": "51.71亿元",
+        "growth": "增长137.90%"
+      },
+      "method": "fast"
+    },
+    {
+      "title": "中际旭创:2024三季报净利润37.53亿 同比增长189.58%",
+      "url": "http://www.baidu.com/link?url=r_2TzZbDTEpWG2ybow_rkFDOKxQzVBAA6P19YC_NXVwCx3YiOEtEKL6IUavfcdvVkKjMsBZT7PsJpAkl90nmJa",
+      "type": "financial",
+      "data": {
+        "profit": "37.53亿元",
+        "growth": "增长189.58%"
+      },
+      "method": "fast"
+    },
+    {
+      "title": "中际旭创2024Q3业绩点评:前三季度营收利润稳步增长,硅光方案加速...",
+      "url": "http://www.baidu.com/link?url=X5DwXbxOBvZsoMQuee3doCT08X41SpKodHnQdWHmmnhsAjpGuWyg7S82LDdHbURbcH2RK8-jNA-3wvASv4D93a",
+      "type": "financial",
+      "data": {},
+      "method": "fast"
+    },
+    {
+      "title": "中际旭创2023年三季报财报|同花顺财经",
+      "url": "http://www.baidu.com/link?url=r_2TzZbDTEpWG2ybow_rkFDOKxQzVBAA6P19YC_NXVwMn7N5zcUTz77u3bMk-atfejyoQqY06VR8TZ5na0xRAa",
+      "type": "financial",
+      "data": {},
+      "method": "fast"
+    },
+    {
+      "title": "中际旭创2024年Q3财报:营收同比增长146.26% | 光电通信",
+      "url": "http://www.baidu.com/link?url=6D4Y07fe7BTaku1Gh-rjnC4StK7zoZoEWqn7fOZ9QiKkCgebvp1xvw58kIZaPvNS",
+      "type": "financial",
+      "data": {
+        "growth": "增长146.26%"
+      },
+      "method": "fast"
+    },
+    {
+      "title": "中际旭创2024年营收238.62亿元同比增122.64%,净利润51.71亿元同比...",
+      "url": "http://www.baidu.com/link?url=bazq7vNO51KuJQ2dc9TRss3erpfZS0wmPFUbh4_SELxEyCQRRMyLG2y8ydr-Q9Q_pQJjmCMbrEHp7RuR_gbuicICyRb5kduHYchEANpGfZO",
+      "type": "financial",
+      "data": {
+        "revenue": "238.62亿元",
+        "profit": "51.71亿元"
+      },
+      "method": "fast"
+    }
+  ]
+}

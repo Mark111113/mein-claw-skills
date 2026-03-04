@@ -1,0 +1,22 @@
+{
+  "query": "宁德时代 2025年 Q3",
+  "language": "zh",
+  "engine": "baidu",
+  "mode": "financial",
+  "timestamp": "2026-02-27T11:51:08.770204",
+  "results": [
+    {
+      "title": "宁德时代(300750.SZ)新财务分析-PC_HSF10资料 - 主要财务指标",
+      "url": "https://emweb.securities.eastmoney.com/PC_HSF10/NewFinanceAnalysis/Index?type=web&code=SZ300750",
+      "type": "financial",
+      "data": {
+        "营业总收入": "2831亿",
+        "归属净利润": "490.3亿",
+        "同比增长": "9.28",
+        "毛利率": "25.31",
+        "净利率": "18.47"
+      },
+      "method": "eastmoney_direct"
+    }
+  ]
+}
