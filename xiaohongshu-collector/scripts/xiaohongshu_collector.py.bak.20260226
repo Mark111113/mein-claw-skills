@@ -1,0 +1,1229 @@
+#!/usr/bin/env python3
+"""
+小红书话题采集器 - 稳定版
+基于成功的test脚本扩展
+支持视频下载（h265 1080p/2K）
+"""
+import sys
+import os
+import time
+import json
+import re
+import random
+import asyncio
+import requests
+from datetime import datetime
+from pathlib import Path
+
+os.environ["DISPLAY"] = ":0"
+
+sys.path.insert(0, '/root/.agents/skills/playwright-fallback/scripts')
+from playwright_fallback import PlaywrightFallback
+
+# 导入视频下载器
+from video_downloader import VideoDownloader
+
+
+class XiaohongshuCollector:
+    """小红书话题采集器"""
+
+    def __init__(self, download_video: bool = True):
+        self.browser = None
+        self.download_video = download_video
+        self.video_downloader = None
+        self._init_video_downloader()
+
+    def _init_video_downloader(self):
+        """初始化视频下载器"""
+        # 从 XHS-Downloader 配置获取 cookie
+        cookie = ""
+        settings_path = Path.home() / ".agents/skills/xiaohongshu/tools/XHS-Downloader/Volume/settings.json"
+        if settings_path.exists():
+            try:
+                with open(settings_path) as f:
+                    settings = json.load(f)
+                    cookie = settings.get("cookie", "")
+            except:
+                pass
+
+        if cookie:
+            self.video_downloader = VideoDownloader(cookie=cookie)
+            print("✅ 视频下载器已初始化")
+        else:
+            print("⚠️ 未找到 Cookie，视频下载功能不可用")
+
+    def random_sleep(self, min_sec=2, max_sec=5):
+        """随机延迟"""
+        delay = random.uniform(min_sec, max_sec)
+        time.sleep(delay)
+
+    def _apply_filters(self, sort, time_filter, note_type=None, search_range=None, location=None):
+        """应用筛选条件（鼠标悬停 + 点击方式 - 已验证有效）"""
+        if sort == "general" and not time_filter and not note_type and not search_range and not location:
+            return
+
+        print("\n📅 应用筛选条件...")
+
+        sort_map = {
+            "general":"综合",
+            "newest":"最新",
+            "most_likes":"最多点赞",
+            "most_comments":"最多评论",
+            "most_favorites":"最多收藏"
+        }
+        time_map = {"1d":"一天内","7d":"一周内","180d":"半年内"}
+        note_type_map = {"all":"不限","video":"视频","image":"图文"}
+        search_range_map = {"all":"不限","viewed":"已看过","unviewed":"未看过","followed":"已关注"}
+        location_map = {"all":"不限","local":"同城","nearby":"附近"}
+
+        try:
+            print("🖱️  鼠标悬停筛选按钮...")
+            filter_btn = self.browser.page.get_by_text("筛选").first
+            box = filter_btn.bounding_box()
+            if not box: print("⚠️  未找到筛选按钮"); return
+            print(f"📍 筛选按钮位置：({box['x']}, {box['y']})")
+            self.browser.page.mouse.move(box['x']-100, box['y'])
+            self.random_sleep(0.5, 1)
+            self.browser.page.mouse.move(box['x']+box['width']/2, box['y']+box['height']/2)
+            print("✓ 已悬停筛选按钮")
+            self.random_sleep(2, 3)
+
+            filters_applied = []
+            if sort and sort != "general":
+                t = sort_map.get(sort, sort)
+                if self._click_filter_option(t): filters_applied.append(f"排序：{t}"); self.random_sleep(1, 2)
+            if note_type and note_type != "all":
+                t = note_type_map.get(note_type, note_type)
+                if self._click_filter_option(t): filters_applied.append(f"类型：{t}"); self.random_sleep(1, 2)
+            if time_filter:
+                t = time_map.get(time_filter, time_filter)
+                if self._click_filter_option(t): filters_applied.append(f"时间：{t}"); self.random_sleep(1, 2)
+            if search_range and search_range != "all":
+                t = search_range_map.get(search_range, search_range)
+                if self._click_filter_option(t): filters_applied.append(f"范围：{t}"); self.random_sleep(1, 2)
+            if location and location != "all":
+                t = location_map.get(location, location)
+                if self._click_filter_option(t): filters_applied.append(f"位置：{t}"); self.random_sleep(1, 2)
+
+            if filters_applied:
+                print(f"✅ 已应用筛选：{', '.join(filters_applied)}")
+                for i in range(3): self.browser.page.evaluate("window.scrollBy(0, 800)"); self.random_sleep(1, 2)
+            else: print("⚠️  未应用任何筛选")
+        except Exception as e: print(f"⚠️  应用筛选失败：{e}")
+
+    def _click_filter_option(self, filter_text):
+        """查找并点击筛选选项（尝试多个候选，提高成功率）"""
+        try:
+            # 获取所有候选元素（不返回element对象，因为无法序列化）
+            candidates_data = self.browser.page.evaluate(f"""() => {{
+                const all = Array.from(document.querySelectorAll('*'));
+                const candidates = [];
+
+                // 特殊处理：对于"视频"和"图文"，只允许精确匹配
+                const strictMatch = ['视频', '图文', '不限'].includes('{filter_text}');
+
+                // 收集所有候选元素
+                all.forEach((el, index) => {{
+                    const text = (el.textContent || '').trim();
+                    const rect = el.getBoundingClientRect();
+
+                    // 只考虑可见元素
+                    if (rect.width <= 0 || rect.height <= 0) return;
+
+                    // 精确匹配（优先）
+                    if (text === '{filter_text}') {{
+                        candidates.push({{
+                            index: index,
+                            text: text,
+                            x: rect.x + rect.width / 2,
+                            y: rect.y + rect.height / 2,
+                            width: rect.width,
+                            height: rect.height,
+                            priority: 1
+                        }});
+                    }}
+                    // 部分匹配（仅在非严格匹配模式下）
+                    else if (!strictMatch && text.includes('{filter_text}') && text.length < 20) {{
+                        candidates.push({{
+                            index: index,
+                            text: text,
+                            x: rect.x + rect.width / 2,
+                            y: rect.y + rect.height / 2,
+                            width: rect.width,
+                            height: rect.height,
+                            priority: 2
+                        }});
+                    }}
+                }});
+
+                // 按优先级排序，然后按宽度排序（优先选择较小的）
+                candidates.sort((a, b) => {{
+                    if (a.priority !== b.priority) return a.priority - b.priority;
+                    return a.width - b.width;  // 优先选择宽度较小的
+                }});
+
+                return candidates;
+            }}""")
+
+            if not candidates_data:
+                print(f"   未找到选项: {filter_text}")
+                return False
+
+            print(f"   找到 {len(candidates_data)} 个候选")
+
+            # 只选择宽度最小的精确匹配候选（避免多次点击）
+            if not candidates_data:
+                print(f"   未找到有效候选")
+                return False
+            
+            target = candidates_data[0]  # 宽度最小的
+            print(f"   🎯 点击最优候选: {target['text']} (宽度:{target['width']:.0f}x{target['height']:.0f})")
+            
+            # 记录点击前的URL
+            url_before = self.browser.page.url
+            
+            # 执行点击
+            self.browser.page.mouse.move(target['x'], target['y'])
+            self.random_sleep(0.3, 0.6)
+            self.browser.page.mouse.click(target['x'], target['y'])
+            print(f"   ✅ 已点击")
+            
+            # 等待页面刷新（通过URL变化判断）
+            print(f"   ⏳ 等待页面刷新...")
+            time.sleep(3)
+            
+            url_after = self.browser.page.url
+            if url_after != url_before:
+                print(f"   ✅ 页面已刷新")
+            else:
+                print(f"   ℹ️  URL未变化，可能无需刷新")
+
+            # 等待页面刷新
+            print(f"   ⏳ 等待页面刷新...")
+            time.sleep(3)
+
+            # 验证筛选是否生效
+            print(f"   🔍 验证筛选是否生效...")
+            is_applied = self._verify_filter_applied(filter_text)
+
+            if is_applied:
+                print(f"   ✅ 筛选已生效: {filter_text}")
+                return True
+            else:
+                print(f"   ⚠️  筛选可能未生效: {filter_text}")
+                return False
+        except Exception as e:
+            print(f"   点击失败: {e}")
+            return False
+
+    def _verify_filter_applied(self, filter_text):
+        """验证筛选条件是否已应用到页面上"""
+        try:
+            # 方法1: 检查页面上是否显示筛选标签
+            has_filter_tag = self.browser.page.evaluate("""
+            () => {
+                const all = Array.from(document.querySelectorAll('*'));
+                // 查找包含筛选文本的元素（如"一天内"、"视频"等）
+                return all.some(el => {
+                    const text = (el.textContent || '').trim();
+                    // 检查是否是筛选标签（通常在按钮或标签中）
+                    return text === '{filter_text}' && 
+                           (el.className?.includes('tag') || 
+                            el.className?.includes('filter') ||
+                            el.className?.includes('active') ||
+                            el.closest('[class*="filter"]') !== null);
+                });
+            }
+            """.replace('{filter_text}', filter_text))
+
+            if has_filter_tag:
+                return True
+
+            # 方法2: 检查URL是否包含筛选参数
+            current_url = self.browser.page.url
+            url_has_filter = 'filter' in current_url or 'sort' in current_url
+
+            # 方法3: 检查是否有"清除筛选"或类似按钮
+            has_clear_button = self.browser.page.evaluate("""
+            () => {
+                const all = Array.from(document.querySelectorAll('*'));
+                return all.some(el => {
+                    const text = (el.textContent || '').trim();
+                    return text.includes('清除') || text.includes('重置') || text.includes('全部');
+                });
+            }
+            """)
+
+            # 如果以上任一条件满足，认为筛选已生效
+            return has_filter_tag or url_has_filter or has_clear_button
+
+        except Exception as e:
+            print(f"   验证失败: {e}")
+            return False
+
+    def _extract_search_results(self):
+        """
+        双策略提取搜索结果卡片
+        策略1: 使用note-item选择器（兼容旧版本）
+        策略2: 直接查找所有explore链接（更可靠）
+        """
+        # 策略1: note-item选择器（过滤"大家都在搜"等搜索推荐链接）
+        result1 = self.browser.page.evaluate("""
+        () => {
+            const cards = [];
+            const elements = document.querySelectorAll('div[class*="note-item"], section[class*="note"]');
+
+            elements.forEach((el, index) => {
+                const link = el.querySelector('a[href*="/explore/"]');
+                if (link) {
+                    // 检查是否是搜索推荐链接（包含 search_result?keyword=）
+                    if (link.href.includes('search_result?keyword=') ||
+                        link.href.includes('source=web_explore_feed')) {
+                        return; // 跳过搜索推荐链接
+                    }
+                    
+                    let title = '';
+                    const titleElem = el.querySelector('[class*="title"]');
+                    if (titleElem) title = titleElem.innerText.trim();
+
+                    cards.push({
+                        index: index,
+                        title: title || '无标题',
+                        href: link.href
+                    });
+                }
+            });
+
+            return {
+                cards: cards,
+                total_elements: elements.length
+            };
+        }
+        """)
+
+        # 策略2: 直接查找所有explore链接（恢复原始版本）
+        result2 = self.browser.page.evaluate("""
+        () => {
+            const cards = [];
+            const seen = new Set();
+            const links = document.querySelectorAll('a[href*="/explore/"]');
+
+            links.forEach((link, index) => {
+                if (seen.has(link.href)) return;
+                seen.add(link.href);
+
+                // 向上查找父元素获取标题
+                let title = '';
+                let parent = link.parentElement;
+                for (let i = 0; i < 5 && parent; i++) {
+                    const text = parent.innerText?.trim();
+                    if (text && text.length > 5 && text.length < 200) {
+                        title = text.split('\\n')[0];
+                        break;
+                    }
+                    parent = parent.parentElement;
+                }
+
+                cards.push({
+                    index: index,
+                    title: title || '无标题',
+                    href: link.href
+                });
+            });
+
+            return {
+                cards: cards,
+                total_links: links.length
+            };
+        }
+        """)
+
+        print(f"✓ 策略1 (note-item): {len(result1['cards'])} 个 / {result1['total_elements']} 个元素")
+        print(f"✓ 策略2 (explore链接): {len(result2['cards'])} 个 / {result2['total_links']} 个链接")
+
+        # 合并结果，优先使用策略1的结果（通常更准确）
+        all_cards = {}
+
+        # 先添加策略1的结果
+        for card in result1['cards']:
+            all_cards[card['href']] = card
+
+        # 再添加策略2的结果（去重）
+        for card in result2['cards']:
+            if card['href'] not in all_cards:
+                all_cards[card['href']] = card
+
+        unique_cards = list(all_cards.values())
+        print(f"✓ 去重后: {len(unique_cards)} 个唯一卡片")
+
+        return unique_cards
+
+    def search_and_collect(self, keyword, max_notes=10, sort="general", time_filter=None, note_type=None):
+        """
+        搜索并采集小红书贴子
+
+        Args:
+            keyword: 搜索关键词
+            max_notes: 最多采集几个贴子
+            sort: 排序依据（general=综合, newest=最新, hot=最热）
+            time_filter: 时间筛选（1d=一天内, 7d=一周内, 30d=一月内, 90d=三月内, 365d=一年内）
+            note_type: 贴子类型（all=不限, video=仅视频, image=仅图文）
+        """
+        print("\n" + "="*70)
+        print(f"🔍 小红书话题采集: {keyword}")
+        if sort != "general":
+            print(f"📊 排序: {sort}")
+        if time_filter:
+            print(f"📅 时间筛选: {time_filter}")
+        print("="*70)
+
+        # 创建保存目录
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+        safe_keyword = re.sub(r'[^\w\u4e00-\u9fff]+', '_', keyword)
+        save_dir = f"/mnt/fn/Download3/clawdbotfile/xiaohongshu/{timestamp}_{safe_keyword}"
+
+        save_path = Path(save_dir)
+        save_path.mkdir(parents=True, exist_ok=True)
+        print(f"📁 保存目录: {save_dir}")
+
+        notes_dir = save_path / "notes"
+        images_dir = save_path / "images"
+        notes_dir.mkdir(exist_ok=True)
+        images_dir.mkdir(exist_ok=True)
+
+        # 创建浏览器
+        self.browser = PlaywrightFallback(profile_name="xiaohongshu")
+
+        try:
+            print("\n📱 启动浏览器...")
+            self.browser.start(headless=False)
+
+            # 检查登录状态
+            print("🔐 检查登录状态...")
+            self.browser.page.goto("https://www.xiaohongshu.com", wait_until="domcontentloaded", timeout=30000)
+            time.sleep(3)
+            
+            # 检查是否需要登录
+            page_url = self.browser.page.url
+            page_title = self.browser.page.title()
+            
+            if '登录' in page_title or 'login' in page_url.lower():
+                print("")
+                print("=" * 50)
+                print("⚠️  未登录或登录已失效")
+                print("=" * 50)
+                print("")
+                print("📱 请在 VNC 中扫码登录小红书：")
+                print("   1. 打开群晖 VNC（端口 5900）")
+                print("   2. 使用手机扫码登录")
+                print("   3. 登录成功后回到终端按回车继续")
+                print("")
+                
+                input("✅ 登录完成后按回车继续...")
+                
+                # 重新加载页面验证登录
+                self.browser.page.reload(wait_until="domcontentloaded", timeout=30000)
+                time.sleep(3)
+                
+                if '登录' not in self.browser.page.title():
+                    print("✅ 登录成功！")
+                else:
+                    print("❌ 登录验证失败，请重试")
+                    return {
+                        "keyword": keyword,
+                        "total_notes": 0,
+                        "notes": [],
+                        "error": "登录失败"
+                    }
+            else:
+                print("✅ 已登录，继续采集...")
+
+            # 通过搜索框进行搜索（不直接访问URL，避免验证）
+            print(f"\n🔍 搜索: {keyword}")
+            if sort != "general":
+                print(f"📊 排序: {sort}")
+            if time_filter:
+                print(f"📅 时间筛选: {time_filter}")
+
+            # 先访问首页
+            print("📱 访问小红书首页...")
+            self.browser.page.goto("https://www.xiaohongshu.com", wait_until="domcontentloaded", timeout=30000)
+            self.random_sleep(2, 3)
+
+            # 查找搜索框并输入关键词
+            print("✍️  在搜索框输入关键词...")
+            try:
+                # 使用正确的搜索框选择器（placeholder="搜索小红书"）
+                search_input = self.browser.page.query_selector('input[placeholder*="搜索小红书"]')
+                
+                if search_input:
+                    search_input.click()
+                    self.random_sleep(0.5, 1)
+                    search_input.fill(keyword)
+                    self.random_sleep(1, 2)
+                    
+                    # 按回车搜索（回车和点击搜索按钮效果一样）
+                    print("⏎ 按回车搜索...")
+                    search_input.press("Enter")
+                    
+                    self.random_sleep(3, 5)
+                    print(f"✅ 搜索完成: {self.browser.page.url}")
+                else:
+                    raise Exception("未找到搜索框")
+                    
+            except Exception as e:
+                print(f"⚠️  搜索失败: {e}")
+                print("💡 请检查登录状态或使用VNC查看")
+                return {"save_dir": "", "total_notes": 0, "notes": []}
+
+            # 应用筛选条件（通过点击按钮，不使用 URL 参数）
+            self._apply_filters(sort, time_filter, note_type)
+
+            # 保存当前搜索结果页URL（用于返回）
+            search_url = self.browser.page.url
+
+            # 获取贴子卡片（优化版：简化滚动，双策略提取）
+            print("📜 等待内容加载...")
+            self.random_sleep(3, 4)  # 等待页面稳定
+
+            # 随机滚动1-3次提供更多选择
+            scroll_times = random.randint(1, 3)
+            print(f"📜 滚动加载内容 ({scroll_times}次)...")
+            for i in range(scroll_times):
+                self.browser.page.evaluate("window.scrollBy(0, 800)")
+                self.random_sleep(2, 3)
+
+            # 双策略提取卡片
+            cards_data = self._extract_search_results()
+
+            if len(cards_data) > 0:
+                print(f"  找到的贴子:")
+                for i, card in enumerate(cards_data[:10], 1):
+                    print(f"    {i}. {card['title'][:50]}")
+
+            # 如果没有找到贴子，截图并保存HTML
+            if len(cards_data) == 0:
+                print("⚠️  未找到任何贴子，正在截图保存...")
+
+                # 截图
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                screenshot_path = f"/root/.openclaw/workspace/temp/no_cards_{timestamp}.png"
+                self.browser.page.screenshot(path=screenshot_path)
+                print(f"   📸 截图已保存: {screenshot_path}")
+
+                # 保存HTML
+                html_path = f"/root/.openclaw/workspace/temp/no_cards_{timestamp}.html"
+                with open(html_path, 'w', encoding='utf-8') as f:
+                    f.write(self.browser.page.content())
+                print(f"   💾 HTML已保存: {html_path}")
+
+                print("   💡 可能的原因：")
+                print("      1. 筛选条件过于严格，没有匹配的笔记")
+                print("      2. 页面还在加载中，请增加等待时间")
+                print("      3. 选择器失效，DOM结构已变化")
+
+                return {
+                    "keyword": keyword,
+                    "total_notes": 0,
+                    "notes": [],
+                    "save_dir": "",
+                    "screenshot": screenshot_path,
+                    "html": html_path
+                }
+
+            # 限制数量
+            cards_to_collect = cards_data[:max_notes]
+            print(f"📝 将采集 {len(cards_to_collect)} 个贴子")
+
+            # 采集每个贴子
+            collected_notes = []
+            collected_urls = set()
+
+            for i, card_info in enumerate(cards_to_collect, 1):
+                print(f"\n{'='*70}")
+                print(f"📄 采集贴子 {i}/{len(cards_to_collect)}")
+                print(f"   标题: {card_info['title'][:50]}")
+                print(f"   链接: {card_info['href'][:60]}...")
+
+                try:
+                    # 通过点击卡片进入详情页（避免直接URL访问触发验证）
+                    note_url = card_info['href']
+                    note_title = card_info.get('title', '')
+                    start_url = self.browser.page.url
+
+                    # 重新获取卡片列表（DOM可能已更新），并过滤推荐链接
+                    all_cards = self.browser.page.query_selector_all('div[class*="note-item"], section[class*="note"]')
+                    
+                    # 过滤"大家都在搜"等推荐卡片
+                    cards = []
+                    for card in all_cards:
+                        link_elem = card.query_selector('a[href*="/explore/"]')
+                        if link_elem:
+                            href = link_elem.get_attribute('href') or ''
+                            # 跳过搜索推荐链接
+                            if 'search_result?keyword=' in href or 'source=web_explore_feed' in href:
+                                continue
+                            cards.append(card)
+
+                    # 查找匹配的卡片（先按标题匹配，再按链接匹配）
+                    target_card = None
+                    for card in cards:
+                        link_elem = card.query_selector('a[href*="/explore/"]')
+                        if link_elem:
+                            href = link_elem.get_attribute('href') or ''
+                            # 方法1: 按链接匹配
+                            if note_url in href:
+                                target_card = card
+                                print(f"   ✅ 通过链接匹配到卡片")
+                                break
+                            # 方法2: 按标题匹配（如果链接匹配失败）
+                            title_elem = card.query_selector('[class*="title"]')
+                            if title_elem and note_title:
+                                card_title = title_elem.inner_text().strip()
+                                if note_title[:30] in card_title or card_title[:30] in note_title:
+                                    target_card = card
+                                    print(f"   ✅ 通过标题匹配到卡片")
+                                    break
+
+                    if not target_card:
+                        print("   ⚠️  未找到对应卡片，尝试使用索引")
+                        if i-1 < len(cards):
+                            target_card = cards[i-1]
+                            print(f"   ⚠️  使用索引 {i-1} 的卡片")
+                        else:
+                            print("   ⚠️  卡片不足，跳过")
+                            continue
+
+                    # 滚动并点击
+                    target_card.scroll_into_view_if_needed()
+                    self.random_sleep(1, 2)
+
+                    print("   🖱️  点击卡片...")
+
+                    # 获取卡片位置，使用鼠标点击
+                    card_box = target_card.bounding_box()
+                    if card_box:
+                        center_x = card_box['x'] + card_box['width'] / 2
+                        center_y = card_box['y'] + card_box['height'] / 2
+                        self.browser.page.mouse.move(center_x, center_y)
+                        self.random_sleep(0.3, 0.5)
+                        self.browser.page.mouse.click(center_x, center_y)
+                    else:
+                        target_card.click()
+
+                    # 等待跳转
+                    print("   ⏳ 等待跳转...")
+                    success = False
+                    waited = 0
+                    max_wait = 15
+
+                    while waited < max_wait:
+                        time.sleep(1)
+                        waited += 1
+
+                        current_url = self.browser.page.url
+
+                        if waited % 5 == 0:
+                            print(f"      等待中... ({waited}/{max_wait}秒)")
+
+                        if '/explore/' in current_url and current_url != start_url:
+                            if current_url not in collected_urls:
+                                print(f"   ✅ 成功跳转！({waited}秒)")
+                                success = True
+                                collected_urls.add(current_url)
+                                break
+                            else:
+                                print(f"   ⚠️  重复URL")
+                                success = False
+                                break
+
+                    if not success:
+                        print(f"   ⏱️  超时，跳过")
+                        continue
+
+                    # 点击后立即开始等待评论元素（关键修复）
+                    print("   ⏳ 等待评论元素加载...")
+                    found_comments = False
+
+                    for wait_i in range(15):  # ⚠️ 缩短到15秒（原来30秒）
+                        time.sleep(1)
+
+                        # 检查评论元素（使用多种选择器）
+                        check_count = self.browser.page.evaluate("""
+                        () => {
+                            // 尝试多种选择器
+                            const selectors = [
+                                '[class*="comment-item"]',
+                                '[class*="comment"]',
+                                '.comment-item',
+                                '.comments-container'
+                            ];
+
+                            for (let selector of selectors) {
+                                const elements = document.querySelectorAll(selector);
+                                if (elements.length > 0) {
+                                    return elements.length;
+                                }
+                            }
+
+                            return 0;
+                        }
+                        """)
+
+                        if check_count > 0:
+                            print(f"   ✅ 找到 {check_count} 个评论元素！（{wait_i}秒）")
+                            found_comments = True
+                            break
+
+                        # 每5秒打印一次
+                        if wait_i % 5 == 0 and wait_i > 0:
+                            print(f"      等待评论中... ({wait_i}/15秒)")
+
+                    if not found_comments:
+                        print("   ⚠️  15秒后仍未找到评论，可能该贴子无评论")
+                        print("   💡 继续采集其他数据...")
+                    
+                    time.sleep(2)
+
+                    # 提取贴子数据
+                    note_data = self._extract_note_data()
+
+                    if not note_data:
+                        print("   ⚠️ 数据提取失败，跳过")
+                        self._close_current_page()
+                        time.sleep(2)  # 等待页面稳定
+                        continue
+
+                    # 先提取评论（在当前页面），再保存图片/视频
+                    print("   💬 提取评论...")
+                    comments_data = self._extract_comments()
+
+                    if comments_data:
+                        note_data['comments'] = comments_data
+                        total_comments = len(comments_data.get('main_comments', []))
+                        total_replies = sum(len(c.get('replies', [])) for c in comments_data.get('main_comments', []))
+                        print(f"   ✓ {total_comments} 条主评论，{total_replies} 条回复")
+                    else:
+                        # Fallback: 评论提取失败，继续采集其他信息
+                        print("   ⚠️ 评论提取失败，跳过评论继续采集其他信息")
+                        note_data['comments'] = {
+                            'main_comments': [],
+                            'total_main_comments': 0,
+                            'total_replies': 0,
+                            'extraction_failed': True
+                        }
+                    
+                    # 保存图片（使用 requests 下载，不离开当前页面）
+                    if note_data.get('images'):
+                        note_images_dir = images_dir / f"{i:03d}"
+                        note_images_dir.mkdir(exist_ok=True)
+
+                        for j, img_url in enumerate(note_data['images'][:10], 1):
+                            try:
+                                # 使用 requests 下载图片，避免浏览器导航
+                                headers = {
+                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                                }
+                                response = requests.get(img_url, headers=headers, timeout=10)
+                                if response.status_code == 200:
+                                    img_path = note_images_dir / f"image_{j}.jpg"
+                                    with open(img_path, 'wb') as f:
+                                        f.write(response.content)
+                                    print(f"   📷 保存图片 {j}/{len(note_data['images'][:10])}")
+                            except Exception as e:
+                                print(f"   ⚠️ 图片下载失败: {e}")
+
+                    # 标记视频（但不下载，使用独立脚本批量下载）
+                    video = note_data.get('video')
+                    if video and video.get('has_video'):
+                        print(f"   🎬 检测到视频，标记待下载")
+                        print(f"      将在采集完成后使用独立脚本下载")
+                        # 不设置 local_path，由批量下载脚本后续填充
+
+                    # ⚠️ 保存JSON必须在视频下载之后，确保 local_path 已写入
+                    safe_title = re.sub(r'[^\w\u4e00-\u9fff]+', '_', note_data.get('title', 'untitled')[:30])
+                    note_filename = f"{i:03d}_{safe_title}"
+                    note_path = notes_dir / f"{note_filename}.json"
+
+                    with open(note_path, 'w', encoding='utf-8') as f:
+                        json.dump(note_data, f, ensure_ascii=False, indent=2)
+
+                    print(f"   ✅ 已保存: {note_path.name}")
+                    collected_notes.append(note_data)
+
+                    # 关闭当前页面，返回搜索结果页（避免重新加载触发验证）
+                    self._close_current_page()
+
+                    # ⚠️ 关键修复：确保已返回列表页，否则强制返回
+                    print("   🔍 确认当前页面...")
+                    current_url = self.browser.page.url
+                    is_detail_page = '/explore/' in current_url and current_url != start_url
+
+                    if is_detail_page:
+                        print("   ⚠️  仍在详情页！尝试强制返回...")
+                        # 尝试按ESC键
+                        self.browser.page.keyboard.press('Escape')
+                        time.sleep(1)
+
+                        # 检查是否成功返回
+                        current_url = self.browser.page.url
+                        if '/explore/' in current_url:
+                            print("   ❌ 强制返回失败，跳过此笔记")
+                            continue
+
+                    print("   ⏳ 等待页面稳定...")
+                    time.sleep(2)
+
+                except Exception as e:
+                    print(f"   ✗ 失败: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+                    # 尝试关闭当前页面返回
+                    try:
+                        self._close_current_page()
+                        time.sleep(2)  # 等待页面稳定
+                    except:
+                        pass
+
+            # 保存汇总
+            summary = {
+                'keyword': keyword,
+                'total_notes': len(collected_notes),
+                'notes': [
+                    {
+                        'index': i+1,
+                        'title': n.get('title', ''),
+                        'url': n.get('url', ''),
+                        'author': n.get('author', ''),
+                        'comments_count': len(n.get('comments', {}).get('main_comments', []))
+                    }
+                    for i, n in enumerate(collected_notes)
+                ],
+                'collected_at': datetime.now().isoformat()
+            }
+
+            summary_path = save_path / "summary.json"
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                json.dump(summary, f, ensure_ascii=False, indent=2)
+
+            print(f"\n{'='*70}")
+            print(f"✅ 采集完成！")
+            print(f"📊 成功采集 {len(collected_notes)} 个贴子")
+            print(f"📁 保存位置: {save_dir}")
+            print(f"📋 汇总文件: summary.json")
+
+            return summary
+
+        finally:
+            print("\n⏳ 关闭浏览器...")
+            self.browser.close()
+
+    def _extract_note_data(self):
+        """提取贴子数据"""
+        try:
+            note_data = {
+                'url': self.browser.page.url,
+                'collected_at': datetime.now().isoformat()
+            }
+
+            # 提取标题
+            try:
+                title = self.browser.page.evaluate("""
+                () => {
+                    const titleElem = document.querySelector('div.title[id="detail-title"]');
+                    if (titleElem) {
+                        return titleElem.innerText.trim();
+                    }
+                    return '';
+                }
+                """)
+                note_data['title'] = title
+                print(f"   📝 标题: {title[:50]}")
+            except:
+                note_data['title'] = ''
+
+            # 提取作者
+            try:
+                author = self.browser.page.evaluate("""
+                () => {
+                    const authorElem = document.querySelector('div[class*="author"]');
+                    if (authorElem) {
+                        return authorElem.innerText.trim();
+                    }
+                    return '';
+                }
+                """)
+                note_data['author'] = author
+                print(f"   👤 作者: {author}")
+            except:
+                note_data['author'] = ''
+
+            # 提取正文
+            try:
+                content = self.browser.page.evaluate("""
+                () => {
+                    const contentElem = document.querySelector('div[class="note-content"]');
+                    if (contentElem) {
+                        return contentElem.innerText.trim();
+                    }
+                    return '';
+                }
+                """)
+                note_data['content'] = content
+                print(f"   📄 内容: {len(content)} 字符")
+            except:
+                note_data['content'] = ''
+
+            # 提取图片URL（只提取贴子正文内的图片）
+            try:
+                images = self.browser.page.evaluate("""
+                () => {
+                    const images = new Set();
+                    const allImgs = document.querySelectorAll('img');
+
+                    allImgs.forEach(img => {
+                        if (img.src && img.src.includes('sns-webpic')) {
+                            // 向上查找父元素，确认图片在正文区域内
+                            let parent = img.parentElement;
+                            let inNote = false;
+
+                            for (let i = 0; i < 5; i++) {
+                                if (!parent) break;
+
+                                const pClass = parent.className || '';
+
+                                // 检查父元素 class 是否包含正文标识
+                                if (pClass.includes('note-content') ||
+                                    pClass.includes('note-slider') ||
+                                    pClass.includes('detail')) {
+                                    inNote = true;
+                                    break;
+                                }
+
+                                parent = parent.parentElement;
+                            }
+
+                            // 只有在正文区域内的图片才添加
+                            if (inNote) {
+                                images.add(img.src);
+                            }
+                        }
+                    });
+
+                    return Array.from(images);
+                }
+                """)
+                note_data['images'] = images
+                if images:
+                    print(f"   📷 正文图片: {len(images)} 张")
+                else:
+                    print(f"   📷 未找到正文图片（可能是纯文字贴子）")
+            except Exception as e:
+                print(f"   ⚠️ 图片提取失败: {e}")
+                note_data['images'] = []
+
+            # 检测视频（只标记，不解析 - 由批量下载脚本处理）
+            try:
+                video_elem = self.browser.page.query_selector('video')
+                if video_elem:
+                    print(f"   🎬 检测到视频，将在采集完成后单独下载")
+                    note_data['video'] = {"has_video": True}  # 只标记，不解析
+                else:
+                    note_data['video'] = None
+            except Exception as e:
+                print(f"   ⚠️ 视频检测失败: {e}")
+                note_data['video'] = None
+
+            return note_data
+
+        except Exception as e:
+            print(f"   ⚠️ 提取失败: {e}")
+            return None
+
+    def _close_current_page(self):
+        """关闭当前贴子页面，返回搜索结果页（避免重新加载触发验证）"""
+        try:
+            print("   🔙 关闭当前页面...")
+
+            # 先检查是否有遮罩层（说明还在贴子详情页）
+            has_mask = self.browser.page.evaluate("""() => {
+                const mask = document.querySelector('[class*="note-detail-mask"]');
+                return mask !== null;
+            }""")
+
+            if not has_mask:
+                print("   ℹ️  已经在搜索结果页，无需关闭")
+                return True
+
+            # 方案1: 查找关闭按钮（页面左上角）
+            close_selectors = [
+                'button[aria-label="关闭"]',
+                'button[aria-label="close"]',
+                'button[class*="close"]',
+                '.close-button',
+                '[class*="header-close"]',
+                'svg[class*="close"]'  # SVG图标
+            ]
+
+            close_btn = None
+            for selector in close_selectors:
+                try:
+                    close_btn = self.browser.page.query_selector(selector)
+                    if close_btn:
+                        box = close_btn.bounding_box(timeout=1000)
+                        if box and box['width'] > 0 and box['height'] > 0:
+                            print(f"   ✅ 找到关闭按钮: {selector}")
+                            break
+                except:
+                    continue
+
+            if close_btn:
+                close_btn.click()
+                print("   ✅ 已点击关闭按钮")
+                self.random_sleep(1, 2)
+                # 验证是否成功关闭
+                mask_gone = self.browser.page.evaluate("""() => {
+                    const mask = document.querySelector('[class*="note-detail-mask"]');
+                    return mask === null;
+                }""")
+                if mask_gone:
+                    print("   ✅ 已关闭页面")
+                    return True
+                else:
+                    print("   ⚠️ 关闭后仍有遮罩层，尝试其他方法")
+
+            # 方案2: 使用JavaScript查找并点击
+            print("   ⚠️ 尝试JavaScript关闭...")
+            js_result = self.browser.page.evaluate("""() => {
+                // 查找所有可能的关闭元素
+                const all = document.querySelectorAll('*');
+                for (let el of all) {
+                    const text = (el.textContent || '').trim();
+                    const rect = el.getBoundingClientRect();
+                    const aria = el.getAttribute('aria-label') || '';
+
+                    // 查找左上角的小图标或按钮
+                    if (rect.x < 100 && rect.y < 100 &&
+                        rect.width > 10 && rect.width < 50 &&
+                        rect.height > 10 && rect.height < 50) {
+                        // 安全检查className（可能是SVGAnimatedString）
+                        const className = String(el.className || '');
+                        const hasCloseClass = el.classList ?
+                            el.classList.contains('close') :
+                            className.includes('close');
+
+                        if (aria === '关闭' || aria === 'close' ||
+                            text === '✕' || text === '×' ||
+                            hasCloseClass) {
+                            el.click();
+                            return {success: true, method: 'JS click'};
+                        }
+                    }
+                }
+                return {success: false};
+            }""")
+
+            if js_result.get('success'):
+                print("   ✅ 已关闭页面（JS）")
+                self.random_sleep(1, 2)
+                return True
+
+            # 方案3: 使用键盘快捷键
+            print("   ⚠️ 尝试键盘快捷键...")
+            # Alt+Left 在Linux/Mac是不同的，尝试多种方式
+            try:
+                # 先尝试Alt+Left（Windows/Linux）
+                self.browser.page.keyboard.down("Alt")
+                self.browser.page.keyboard.press("ArrowLeft")
+                self.browser.page.keyboard.up("Alt")
+                print("   ✅ 已后退（Alt+Left）")
+                self.random_sleep(1, 2)
+                return True
+            except:
+                # 尝试Command+Left（Mac）
+                try:
+                    self.browser.page.keyboard.down("Meta")
+                    self.browser.page.keyboard.press("ArrowLeft")
+                    self.browser.page.keyboard.up("Meta")
+                    print("   ✅ 已后退（Cmd+Left）")
+                    self.random_sleep(1, 2)
+                    return True
+                except:
+                    pass
+
+        except Exception as e:
+            print(f"   ⚠️ 关闭失败: {e}")
+            return False
+
+    def _extract_comments(self):
+        """提取评论（结构化）- 修复版：合并检测和提取"""
+        try:
+            # 合并检测和提取为一次操作，避免状态变化
+            result = self.browser.page.evaluate("""
+            () => {
+                const items = document.querySelectorAll('[class*="comment-item"]');
+                const count = items.length;
+                
+                if (count === 0) {
+                    return { count: 0, data: [] };
+                }
+                
+                const data = Array.from(items).map((elem, index) => {
+                    const text = elem.innerText || '';
+                    const isReply = elem.classList.contains('comment-item-sub') ||
+                                   elem.classList.contains('sub-comment');
+
+                    return {
+                        index: index,
+                        text: text,
+                        isReply: isReply
+                    };
+                });
+                
+                return { count: count, data: data };
+            }
+            """)
+            
+            check_count = result['count']
+            data = result['data']
+            
+            print(f"   🔍 找到 {check_count} 个评论元素")
+
+            if not data or len(data) == 0:
+                print("   ⚠️ 未找到评论")
+                return None
+
+            # 解析评论
+            main_comments = []
+            current_main = None
+
+            for item in data:
+                text = item['text']
+                lines = [line.strip() for line in text.split('\n') if line.strip()]
+
+                if len(lines) < 2:
+                    continue
+
+                # 解析用户名和作者标识
+                first_line = lines[0]
+                is_author = '作者' in first_line
+                user = first_line.replace('作者', '').strip()
+                
+                # 如果"作者"单独占一行
+                if len(lines) > 1 and lines[1] == '作者':
+                    is_author = True
+                    user = first_line
+                    lines = lines[1:]  # 跳过"作者"行
+
+                # 提取内容、日期、点赞
+                content = ''
+                date = ''
+                likes = 0
+
+                for line in lines[1:]:
+                    # 跳过标识性文本
+                    if line in ['赞', '回复', '作者', '置顶评论']:
+                        continue
+                    
+                    # 匹配日期
+                    if re.match(r'^\d{4}-\d{2}-\d{2}', line) or '前' in line or '刚刚' in line or '编辑' in line:
+                        date = line
+                        continue
+                    
+                    # 匹配点赞数
+                    if line.isdigit():
+                        likes = int(line)
+                        continue
+                    
+                    # 其他文本作为内容
+                    if len(line) > 1 and not content:
+                        content = line
+
+                # 如果没有提取到内容，尝试合并所有非关键行
+                if not content:
+                    content_parts = []
+                    for line in lines[1:]:
+                        if line not in ['赞', '回复', '作者', '置顶评论'] and \
+                           not re.match(r'^\d{4}-\d{2}-\d{2}', line) and \
+                           not line.isdigit() and '前' not in line and '刚刚' not in line:
+                            content_parts.append(line)
+                    content = ' '.join(content_parts)
+
+                comment_data = {
+                    'user': user,
+                    'content': content,
+                    'date': date,
+                    'likes': likes,
+                    'is_author': is_author,
+                    'replies': []
+                }
+
+                # 组织结构（主评论和回复）
+                if item['isReply']:
+                    # 这是回复，添加到当前主评论
+                    if current_main is not None:
+                        current_main['replies'].append(comment_data)
+                else:
+                    # 这是主评论
+                    if current_main is not None:
+                        main_comments.append(current_main)
+                    current_main = comment_data
+
+            # 添加最后一个主评论
+            if current_main is not None:
+                main_comments.append(current_main)
+
+            if not main_comments:
+                print("   ⚠️ 未能解析评论")
+                return None
+
+            return {
+                'main_comments': main_comments,
+                'total_main_comments': len(main_comments),
+                'total_replies': sum(len(c['replies']) for c in main_comments)
+            }
+
+        except Exception as e:
+            print(f"   ⚠️ 评论提取失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+
+def main():
+    """命令行入口"""
+    import argparse
+
+    parser = argparse.ArgumentParser(description='小红书话题采集器（支持视频下载）')
+    parser.add_argument('keyword', help='搜索关键词')
+    parser.add_argument('--max', type=int, default=10, help='最多采集几个贴子')
+    parser.add_argument('--sort', type=str, default='general', 
+                       choices=['general', 'newest', 'hot', 'most_likes', 'most_comments', 'most_favorites'],
+                       help='排序依据：general=综合, newest=最新, hot=最热, most_likes=最多点赞, most_comments=最多评论, most_favorites=最多收藏')
+    parser.add_argument('--time-filter', type=str, default=None,
+                       choices=['1d', '7d', '30d', '90d', '365d'],
+                       help='时间筛选：1d=一天内, 7d=一周内, 30d=一月内, 90d=三月内, 365d=一年内')
+    parser.add_argument('--note-type', type=str, default=None,
+                       choices=['all', 'video', 'image'],
+                       help='笔记类型：all=不限, video=仅视频, image=仅图文')
+    parser.add_argument('--no-video', action='store_true', help='不下载视频（仅记录信息）')
+
+    args = parser.parse_args()
+
+    collector = XiaohongshuCollector(download_video=not args.no_video)
+    collector.search_and_collect(
+        keyword=args.keyword,
+        max_notes=args.max,
+        sort=args.sort,
+        time_filter=args.time_filter,
+        note_type=args.note_type
+    )
+
+
+if __name__ == "__main__":
+    main()
+
+# 注意：视频下载现在使用两步流程
+# 第1步：采集贴子
+# 第2步：python3 download_videos_separate.py <notes_dir> -o <videos_dir>
