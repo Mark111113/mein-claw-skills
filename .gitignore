@@ -13,6 +13,15 @@ build/
 *.tmp
 temp/
 
+# Local runtime / state
+**/.server.pid
+**/server.log
+**/open_exporter_vnc.log
+**/state/
+**/.data/
+**/.output/
+**/node_modules/
+
 # IDE
 .vscode/
 .idea/
