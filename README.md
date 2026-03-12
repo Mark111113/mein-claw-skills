@@ -48,6 +48,7 @@
 - 拉取公众号最近 N 篇文章列表
 - 复用 `auth-key` 登录态
 - 可选调用 `wechat-collector` 批量采正文
+- 依赖开源项目 `wechat-article/wechat-article-exporter` 作为发现层
 - 适合按需启动，不建议高频无人值守抓取
 
 ## 🚀 使用方法

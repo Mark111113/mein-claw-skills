@@ -6,6 +6,25 @@
 
 这个 skill 不直接抓正文，而是先通过本地 `wechat-article-exporter` 服务拿到某个公众号最近 N 篇文章列表，再可选调用同仓库内的 `wechat-collector` 抓正文。
 
+## exporter 来源
+
+本 skill 依赖一个外部开源项目作为“文章列表发现层”：
+
+- 上游仓库：`https://github.com/wechat-article/wechat-article-exporter`
+
+默认情况下，`scripts/start_exporter_dev.sh` 会在 `WECHAT_EXPORTER_DIR` 不存在时，自动从这个仓库 clone 到本地。
+
+如果你不想让脚本自动拉取外部仓库，也可以：
+
+1. 手动 clone `wechat-article-exporter`
+2. 用环境变量把它指到目标目录
+
+例如：
+
+```bash
+export WECHAT_EXPORTER_DIR=/your/path/wechat-article-exporter
+```
+
 ## 特点
 
 - 支持 `article-url -> biz/fakeid -> latest N`

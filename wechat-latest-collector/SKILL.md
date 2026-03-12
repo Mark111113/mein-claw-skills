@@ -34,6 +34,19 @@ description: 微信公众号“最近 N 篇文章”采集技能。用于用户�
 
 没有 exporter 服务在线，就无法完成“按公众号发现最近 N 篇”。
 
+## exporter 来源
+
+这个 skill 依赖的本地服务不是本仓库自带的大项目，而是一个外部开源项目：
+
+- 上游仓库：`https://github.com/wechat-article/wechat-article-exporter`
+
+`scripts/start_exporter_dev.sh` 的默认行为是：
+
+- 如果 `WECHAT_EXPORTER_DIR` 指向的目录不存在该项目
+- 则自动从上面的 GitHub 仓库 clone 一份到本地
+
+如果你不希望脚本自动 clone 外部仓库，也可以先手动把 `wechat-article-exporter` 放到 `WECHAT_EXPORTER_DIR` 指定的位置，再运行本 skill。
+
 ## 目录与默认约定
 
 ### exporter 项目目录
